@@ -2,6 +2,13 @@
 
 #include "util.h"
 
+#include <cmath>
+
+#include <algorithm>
+#include <map>
+#include <queue>
+#include <vector>
+
 #include <vtkDataArray.h>
 #include <vtkPointData.h>
 #include <vtkSmartPointer.h>
@@ -9,15 +16,31 @@
 #include <vtkStructuredPointsReader.h>
 #include <vtkStructuredPointsWriter.h>
 
-#include <queue>
-
 namespace {
 
 // Input files.
-const char *kScalarFieldFile = "smoothed_scalar.vtk";
-const char *kBinaryFieldFile = "binary_volume.vtk";
-const char *kBinaryFieldToDeflate = "inflated_binary_volume.vtk";
-const char *kMaskFieldFile = "mask_volume.vtk";
+// const char *kScalarFieldFile = "smoothed_scalar.vtk";
+// const char *kScalarFieldFile = "smoothed_scalar_5.vtk";
+// const char *kScalarFieldFile = "/home/linyufly/Data/P96_bFTLE.vtk";
+const char *kScalarFieldFile = "/home/linyufly/GitHub/GaussianSmoothing3D/gaussian_smoothed.vtk";
+// const char *kBinaryFieldFile = "binary_volume.vtk";
+// const char *kBinaryFieldFile = "threshold_volume_raw_5_2.vtk";
+const char *kBinaryFieldFile = "largest_component.vtk";
+// const char *kBinaryFieldToDeflate = "inflated_binary_volume.vtk";
+const char *kBinaryFieldToDeflate = "inflated_binary_volume_raw_5_2.vtk";
+// const char *kMaskFieldFile = "mask_volume.vtk";
+const char *kMaskFieldFile = "deflated_binary_volume_raw_5_2.vtk";
+// const char *kMaskFieldFile = "inflated_binary_volume.vtk";
+// const char *kMaskFieldFile = "deflate.vtk";
+const char *kCoarseLabelFile = "coarse_labelling.vtk";
+// const char *kFineLabelFile = "fine_labelling.vtk";
+const char *kFineLabelFile = "/home/linyufly/GitHub/Watershed/itk_watershed_image_filter_result.vtk";
+const char *kScalarFieldToCrop = "/home/linyufly/Data/convective_half.vtk";
+const char *kScalarFieldToSymmetricalize = "cropped_convective_half.vtk";
+// const char *kLabelFieldToModify = "convective_labelling.vtk";
+const char *kLabelFieldToModify = "modify.vtk";
+const char *kFineLabelFieldFile = "convective_half_fine_labelling.vtk";
+const char *kCoarseLabelFieldFile = "convective_half_coarse_labelling.vtk";
 
 // Output files.
 const char *kThresholdOutputFile = "threshold.vtk";
@@ -26,12 +49,18 @@ const char *kComponentOutputFile = "component.vtk";
 const char *kInflateOutputFile = "inflate.vtk";
 const char *kDeflateOutputFile = "deflate.vtk";
 const char *kMaskOutputFile = "masked.vtk";
+const char *kBoundaryOutputFile = "boundary.vtk";
+const char *kCropOutputFile = "crop.vtk";
+const char *kSymmetricalizeOutputFile = "symmetricalize.vtk";
+const char *kModifyOutputFile = "modify.vtk";
+const char *kDigOutputFile = "dig.vtk";
 
-const double kThreshold = 4.5;  // 4.0, 4.5, 5.0
+const double kThreshold = 5.2;  // 4.0, 4.5, 5.0, 5.5, 6.0
+const double kCropDistance = 1.6;
 
 const int kConnectivity = 6;
-const int kNumberOfInflations = 15;
-const int kNumberOfDeflations = 15;
+const int kNumberOfInflations = 10;
+const int kNumberOfDeflations = 8;
 
 const int dire[6][3] = {
     {1, 0, 0}, {-1, 0, 0},
@@ -57,6 +86,10 @@ bool outside(int *index, int *dimensions) {
   }
 
   return false;
+}
+
+double square(double value) {
+  return value * value;
 }
 
 int flood_fill(int s_x, int s_y, int s_z, vtkStructuredPoints *field,
@@ -639,13 +672,463 @@ void mask_test() {
   printf("} mask_test\n");
 }
 
+void boundary_test() {
+  printf("boundary_test {\n");
+
+  vtkSmartPointer<vtkStructuredPointsReader> reader =
+      vtkSmartPointer<vtkStructuredPointsReader>::New();
+  reader->SetFileName(kFineLabelFile);
+  reader->Update();
+
+  vtkSmartPointer<vtkStructuredPoints> fine =
+      vtkSmartPointer<vtkStructuredPoints>::New();
+  fine->DeepCopy(reader->GetOutput());
+
+  reader->SetFileName(kCoarseLabelFile);
+  reader->Update();
+
+  vtkSmartPointer<vtkStructuredPoints> coarse =
+      vtkSmartPointer<vtkStructuredPoints>::New();
+  coarse->DeepCopy(reader->GetOutput());
+
+  int dimensions[3];
+
+  fine->GetDimensions(dimensions);
+
+  int nx = dimensions[0];
+  int ny = dimensions[1];
+  int nz = dimensions[2];
+
+  std::map<int, int> label_map;
+  int num_labels = 0;
+
+  int ***labels = create_3d_array<int>(nx, ny, nz);
+
+  for (int x = 0; x < nx; x++) {
+    for (int y = 0; y < ny; y++) {
+      for (int z = 0; z < nz; z++) {
+        int curr_index[] = {x, y, z};
+        int curr_code = code(curr_index, dimensions);
+        double curr_label =
+            coarse->GetPointData()->GetScalars()->GetTuple1(curr_code);
+
+        int value = static_cast<int>(curr_label + 0.5);
+
+        if (label_map.find(value) == label_map.end()) {
+          label_map[value] = num_labels++;
+        }
+
+        labels[x][y][z] = label_map[value];
+      }
+    }
+  }
+
+  bool detected = false;
+
+  for (int x = 0; x < nx; x++) {
+    for (int y = 0; y < ny; y++) {
+      for (int z = 0; z < nz; z++) {
+        /// DEBUG ///
+        // if (labels[x][y][z] != labels[0][0][0]) {
+        //   continue;
+        // }
+
+        int curr_index[] = {x, y, z};
+        int curr_code = code(curr_index, dimensions);
+        double label_0 =
+            fine->GetPointData()->GetScalars()->GetTuple1(0);
+        double curr_label =
+            fine->GetPointData()->GetScalars()->GetTuple1(curr_code);
+
+        if (curr_label != label_0) {
+          labels[x][y][z] = num_labels;
+          detected = true;
+        }
+      }
+    }
+  }
+
+  if (detected) {
+    num_labels++;
+  }
+
+  for (int x = 0; x < nx; x++) {
+    for (int y = 0; y < ny; y++) {
+      for (int z = 0; z < nz; z++) {
+        int curr_index[] = {x, y, z};
+        int curr_code = code(curr_index, dimensions);
+        coarse->GetPointData()->GetScalars()->SetTuple1(
+            curr_code, static_cast<double>(labels[x][y][z]));
+      }
+    }
+  }
+
+  delete_3d_array(labels);
+
+  vtkSmartPointer<vtkStructuredPointsWriter> writer =
+      vtkSmartPointer<vtkStructuredPointsWriter>::New();
+  writer->SetFileName(kBoundaryOutputFile);
+  writer->SetInputData(coarse);
+  writer->Write();
+
+  printf("} boundary_test\n");
+}
+
+void crop_test() {
+  printf("crop_test {\n");
+
+  vtkSmartPointer<vtkStructuredPointsReader> reader =
+      vtkSmartPointer<vtkStructuredPointsReader>::New();
+  reader->SetFileName(kScalarFieldToCrop);
+  reader->Update();
+
+  vtkSmartPointer<vtkStructuredPoints> field =
+      vtkSmartPointer<vtkStructuredPoints>::New();
+  field->DeepCopy(reader->GetOutput());
+
+  int dimensions[3];
+  field->GetDimensions(dimensions);
+
+  double spacing[3], origin[3];
+  field->GetSpacing(spacing);
+  field->GetOrigin(origin);
+
+  int nx = dimensions[0];
+  int ny = dimensions[1];
+  int nz = dimensions[2];
+
+  for (int x = 0; x < nx; x++) {
+    for (int y = 0; y < ny; y++) {
+      for (int z = 0; z < nz; z++) {
+        int index = (z * ny + y) * nx + x;
+
+        double coord[3];
+        coord[0] = origin[0] + spacing[0] * x;
+        coord[1] = origin[1] + spacing[1] * y;
+        coord[2] = origin[2] + spacing[2] * z;
+
+        if (sqrt(coord[0] * coord[0] + coord[1] * coord[1]) > kCropDistance) {
+          field->GetPointData()->GetScalars()->SetTuple1(index, 0.0);
+        }
+      }
+    }
+  }
+
+  vtkSmartPointer<vtkStructuredPointsWriter> writer =
+      vtkSmartPointer<vtkStructuredPointsWriter>::New();
+  writer->SetFileName(kCropOutputFile);
+  writer->SetInputData(field);
+  writer->Write();
+
+  printf("} crop_test\n");
+}
+
+void symmetricalize_test() {
+  printf("symmetricalize_test {\n");
+
+  vtkSmartPointer<vtkStructuredPointsReader> reader =
+      vtkSmartPointer<vtkStructuredPointsReader>::New();
+  reader->SetFileName(kScalarFieldToSymmetricalize);
+  reader->Update();
+
+  vtkSmartPointer<vtkStructuredPoints> field =
+      vtkSmartPointer<vtkStructuredPoints>::New();
+  field->DeepCopy(reader->GetOutput());
+
+  int dimensions[3];
+  field->GetDimensions(dimensions);
+
+  double spacing[3], origin[3];
+  field->GetSpacing(spacing);
+  field->GetOrigin(origin);
+
+  int nx = dimensions[0];
+  int ny = dimensions[1];
+  int nz = dimensions[2];
+
+  for (int z = 0; z < nz; z++) {
+    printf("z = %d\n", z);
+
+    std::map<double, double> sum_value;
+    std::map<double, int> count;
+
+    for (int x = 0; x < nx; x++) {
+      for (int y = 0; y < ny; y++) {
+        int index = (z * ny + y) * nx + x;
+
+        double coord[2];
+        coord[0] = origin[0] + spacing[0] * x;
+        coord[1] = origin[1] + spacing[1] * y;
+
+        double dist = sqrt(coord[0] * coord[0] + coord[1] * coord[1]);
+        double value = field->GetPointData()->GetScalars()->GetTuple1(index);
+
+        sum_value[dist] += value;
+        count[dist]++;
+      }
+    }
+
+    std::vector<double> distance_list;
+    for (std::map<double, double>::iterator itr = sum_value.begin();
+         itr != sum_value.end(); ++itr) {
+      distance_list.push_back(itr->first);
+    }
+
+    // double tolerance = sqrt(spacing[0] * spacing[0] + spacing[1] * spacing[1]);
+    double tolerance = spacing[0];
+
+    for (int x = 0; x < nx; x++) {
+      for (int y = 0; y < ny; y++) {
+        int index = (z * ny + y) * nx + x;
+
+        double coord[2];
+        coord[0] = origin[0] + spacing[0] * x;
+        coord[1] = origin[1] + spacing[1] * y;
+
+        double dist = sqrt(coord[0] * coord[0] + coord[1] * coord[1]);
+
+        int lb = lower_bound(distance_list.begin(), distance_list.end(),
+                             dist - tolerance) - distance_list.begin();
+        int ub = upper_bound(distance_list.begin(), distance_list.end(),
+                             dist + tolerance) - distance_list.begin();
+
+        double sum_scalar = 0.0;
+        int sum_count = 0;
+
+        for (int p = lb; p < ub; p++) {
+          double curr_dist = distance_list[p];
+          if (sum_value.find(curr_dist) == sum_value.end()) {
+            continue;
+          }
+
+          sum_scalar += sum_value[curr_dist];
+          sum_count += count[curr_dist];
+        }
+
+        /// DEBUG ///
+        if (sum_count == 0) {
+          printf("dist = %lf\n", dist);
+          printf("x, y, z = %d, %d, %d\n", x, y, z);
+          printf("lb, ub = %d, %d\n", lb, ub);
+          for (int p = lb; p < ub; p++) {
+            printf(" %lf", distance_list[p]);
+          }
+          printf("\n");
+          exit(0);
+        }
+
+        double average = sum_scalar / sum_count;
+
+        field->GetPointData()->GetScalars()->SetTuple1(index, average);
+      }
+    }
+  }
+
+  vtkSmartPointer<vtkStructuredPointsWriter> writer =
+      vtkSmartPointer<vtkStructuredPointsWriter>::New();
+  writer->SetFileName(kSymmetricalizeOutputFile);
+  writer->SetInputData(field);
+  writer->Write();
+
+  printf("} symmetricalize_test\n");
+}
+
+void modify_test() {
+  printf("modify_test {\n");
+
+  vtkSmartPointer<vtkStructuredPointsReader> reader =
+      vtkSmartPointer<vtkStructuredPointsReader>::New();
+  reader->SetFileName(kLabelFieldToModify);
+  reader->Update();
+
+  vtkSmartPointer<vtkStructuredPoints> field =
+      vtkSmartPointer<vtkStructuredPoints>::New();
+  field->DeepCopy(reader->GetOutput());
+
+  int dimensions[3];
+  field->GetDimensions(dimensions);
+
+  double spacing[3], origin[3];
+  field->GetSpacing(spacing);
+  field->GetOrigin(origin);
+
+  int nx = dimensions[0];
+  int ny = dimensions[1];
+  int nz = dimensions[2];
+
+  double coord_1[] = {0.0, 1.0, 0.9};
+  double coord_2[] = {0.0, 1.0, 2.0};
+
+  int y_1 = static_cast<int>((coord_1[1] - origin[1]) / spacing[1]);
+  int z_1 = static_cast<int>((coord_1[2] - origin[2]) / spacing[2]);
+
+  int y_2 = static_cast<int>((coord_2[1] - origin[1]) / spacing[1]);
+  int z_2 = static_cast<int>((coord_2[2] - origin[2]) / spacing[2]);
+
+  int index_1 = (z_1 * ny + y_1) * nx;
+  int index_2 = (z_2 * ny + y_2) * nx;
+
+  double label_1 = field->GetPointData()->GetScalars()->GetTuple1(index_1);
+  double label_2 = field->GetPointData()->GetScalars()->GetTuple1(index_2);
+
+  for (int x = 0; x < nx; x++) {
+    for (int y = 0; y < ny; y++) {
+      for (int z = 0; z < nz; z++) {
+        int index = (z * ny + y) * nx + x;
+        if (field->GetPointData()->GetScalars()->GetTuple1(index) == label_1) {
+          field->GetPointData()->GetScalars()->SetTuple1(index, label_2);
+        }
+      }
+    }
+  }
+
+  vtkSmartPointer<vtkStructuredPointsWriter> writer =
+      vtkSmartPointer<vtkStructuredPointsWriter>::New();
+  writer->SetFileName(kModifyOutputFile);
+  writer->SetInputData(field);
+  writer->Write();
+ 
+
+  printf("} modify_test\n");
+}
+
+void dig_test() {
+  printf("dig_test {\n");
+
+  vtkSmartPointer<vtkStructuredPointsReader> reader =
+      vtkSmartPointer<vtkStructuredPointsReader>::New();
+  reader->SetFileName(kFineLabelFieldFile);
+  reader->Update();
+
+  vtkSmartPointer<vtkStructuredPoints> fine_label_field =
+      vtkSmartPointer<vtkStructuredPoints>::New();
+  fine_label_field->DeepCopy(reader->GetOutput());
+
+  reader->SetFileName(kCoarseLabelFieldFile);
+  reader->Update();
+
+  vtkSmartPointer<vtkStructuredPoints> coarse_label_field =
+      vtkSmartPointer<vtkStructuredPoints>::New();
+  coarse_label_field->DeepCopy(reader->GetOutput());
+
+  int dimensions[3];
+  coarse_label_field->GetDimensions(dimensions);
+
+  double origin[3], spacing[3];
+  coarse_label_field->GetOrigin(origin);
+  coarse_label_field->GetSpacing(spacing);
+
+  double points[4][3] = {{0.0, 1.15, 1.66},
+                         {0.0, 1.15, 1.56},
+                         {0.0, 1.08, 1.48},
+                         {0.0, 1.08, 1.42}};
+
+  int nx = dimensions[0];
+  int ny = dimensions[1];
+  int nz = dimensions[2];
+
+  int point_indices[4][3];
+  for (int p = 0; p < 4; p++) {
+    for (int c = 0; c < 3; c++) {
+      point_indices[p][c] = static_cast<int>((points[p][c] - origin[c]) / spacing[c]);
+    }
+  }
+
+  double point_labels[4];
+ 
+  int first_index;
+  for (int p = 0; p < 4; p++) {
+    int index = (point_indices[p][2] * ny + point_indices[p][1]) * nx + point_indices[p][0];
+
+    if (!p) {
+      first_index = index;
+    }
+
+    point_labels[p] = fine_label_field->GetPointData()->GetScalars()->GetTuple1(index);
+  }
+
+  int num_labels = 0;
+  std::map<double, int> label_map;
+
+  for (int x = 0; x < nx; x++) {
+    for (int y = 0; y < ny; y++) {
+      for (int z = 0; z < nz; z++) {
+        int index = (z * ny + y) * nx + x;
+
+        double label = coarse_label_field->GetPointData()->GetScalars()->GetTuple1(index);
+
+        if (label_map.find(label) == label_map.end()) {
+          label_map[label] = num_labels++;
+        }
+
+        coarse_label_field->GetPointData()->GetScalars()->SetTuple1(index, label_map[label]);
+      }
+    }
+  }
+
+  double original_label = coarse_label_field->GetPointData()->GetScalars()->GetTuple1(first_index);
+
+  for (int z = 0; z < nz; z++) {
+    double min_dist = -1.0;
+    double max_dist = -1.0;
+
+    for (int y = 0; y < ny; y++) {
+      int index = (z * ny + y) * nx;
+      double curr_label = fine_label_field->GetPointData()->GetScalars()->GetTuple1(index);
+      if (curr_label == point_labels[0]
+          || curr_label == point_labels[1]
+          || curr_label == point_labels[2]
+          || curr_label == point_labels[3]) {
+        double dist = square(y * spacing[1] + origin[1]);
+
+        if (min_dist < 0.0 || dist < min_dist) {
+          min_dist = dist;
+        }
+        if (max_dist < dist) {
+          max_dist = dist;
+        }
+      }
+    }
+
+    if (min_dist < 0.0) {
+      continue;
+    }
+
+    for (int x = 0; x < nx; x++) {
+      for (int y = 0; y < ny; y++) {
+        double dist = square(x * spacing[0] + origin[0]) + square(y * spacing[1] + origin[1]);
+        if (min_dist <= dist && dist <= max_dist + 0.1) {
+          int index = (z * ny + y) * nx + x;
+
+          if (coarse_label_field->GetPointData()->GetScalars()->GetTuple1(index) == original_label) {
+            coarse_label_field->GetPointData()->GetScalars()->SetTuple1(index, num_labels);
+          }
+        }
+      }
+    }
+  }
+
+  vtkSmartPointer<vtkStructuredPointsWriter> writer =
+      vtkSmartPointer<vtkStructuredPointsWriter>::New();
+  writer->SetInputData(coarse_label_field);
+  writer->SetFileName(kDigOutputFile);
+  writer->Write();
+
+  printf("} dig_test\n");
+}
+
 int main() {
   // threshold_test();
   // waterproof_test();
   // component_test();
   // inflate_test();
   // deflate_test();
-  mask_test();
+  // mask_test();
+  // boundary_test();
+  // crop_test();
+  // symmetricalize_test();
+  // modify_test();
+  dig_test();
 
   return 0;
 }
