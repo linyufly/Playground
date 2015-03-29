@@ -10,6 +10,7 @@
 #include <vector>
 
 #include <vtkDataArray.h>
+#include <vtkDoubleArray.h>
 #include <vtkPointData.h>
 #include <vtkSmartPointer.h>
 #include <vtkStructuredPoints.h>
@@ -22,17 +23,27 @@ namespace {
 // const char *kScalarFieldFile = "smoothed_scalar.vtk";
 // const char *kScalarFieldFile = "smoothed_scalar_5.vtk";
 // const char *kScalarFieldFile = "/home/linyufly/Data/P96_bFTLE.vtk";
-const char *kScalarFieldFile = "/home/linyufly/GitHub/GaussianSmoothing3D/gaussian_smoothed.vtk";
+// const char *kScalarFieldFile = "/home/linyufly/GitHub/GaussianSmoothing3D/gaussian_smoothed.vtk";
+// const char *kScalarFieldFile = "P96_bFTLE/FTLE96ixbwd3D_highres_noT.1.vtk";
+// const char *kScalarFieldFile = "/home/linyufly/GitLab/RidgeExtraction/data/convective_half_ftle.vtk";
+const char *kScalarFieldFile = "/home/linyufly/GitLab/RidgeExtraction/data/convective_half_label_dig_corrected.vtk";
+// const char *kScalarFieldFile = "P96_bFTLE/FTLE96ixbwd3D_highres_noT.1.vtk";
+// const char *kScalarFieldFile = "P96_bFTLE/FTLE96ixbwd3D_highres_noT.2.vtk";
+// const char *kScalarFieldFile = "P96_bFTLE/FTLE96ixbwd3D_highres_noT.24.vtk";
 // const char *kBinaryFieldFile = "binary_volume.vtk";
 // const char *kBinaryFieldFile = "threshold_volume_raw_5_2.vtk";
-const char *kBinaryFieldFile = "largest_component.vtk";
+// const char *kBinaryFieldFile = "largest_component.vtk";
+const char *kBinaryFieldFile = "component.vtk";
 // const char *kBinaryFieldToDeflate = "inflated_binary_volume.vtk";
-const char *kBinaryFieldToDeflate = "inflated_binary_volume_raw_5_2.vtk";
+// const char *kBinaryFieldToDeflate = "inflated_binary_volume_raw_5_2.vtk";
+const char *kBinaryFieldToDeflate = "inflate.vtk";
 // const char *kMaskFieldFile = "mask_volume.vtk";
-const char *kMaskFieldFile = "deflated_binary_volume_raw_5_2.vtk";
+// const char *kMaskFieldFile = "deflated_binary_volume_raw_5_2.vtk";
+const char *kMaskFieldFile = "deflate.vtk";
 // const char *kMaskFieldFile = "inflated_binary_volume.vtk";
 // const char *kMaskFieldFile = "deflate.vtk";
-const char *kCoarseLabelFile = "coarse_labelling.vtk";
+// const char *kCoarseLabelFile = "coarse_labelling.vtk";
+const char *kCoarseLabelFile = "/home/linyufly/GitHub/Watershed/itk_watershed_image_filter_result.vtk";
 // const char *kFineLabelFile = "fine_labelling.vtk";
 const char *kFineLabelFile = "/home/linyufly/GitHub/Watershed/itk_watershed_image_filter_result.vtk";
 const char *kScalarFieldToCrop = "/home/linyufly/Data/convective_half.vtk";
@@ -54,13 +65,39 @@ const char *kCropOutputFile = "crop.vtk";
 const char *kSymmetricalizeOutputFile = "symmetricalize.vtk";
 const char *kModifyOutputFile = "modify.vtk";
 const char *kDigOutputFile = "dig.vtk";
+const char *kMirrorOutputFile = "mirror.vtk";
 
-const double kThreshold = 5.2;  // 4.0, 4.5, 5.0, 5.5, 6.0
+const double kThreshold = 5.8;  // 4.0, 4.5, 5.0, 5.5, 6.0
+                                // 5.8 for 0
+                                // 5.8 for 1
+                                // 5.7 for 2
+                                // 5.4 for 3
+                                // 5.4 for 4
+                                // 5.4 for 5
+                                // 5.4 for 6
+                                // 5.3 for 7
+                                // 5.3 for 8
+                                // 5.3 for 9
+                                // 5.2 for 10
+                                // 5.2 for 11
+                                // 5.2 for 12
+                                // 5.3 for 13
+                                // 5.3 for 14
+                                // 5.4 for 15
+                                // 5.4 for 16
+                                // 5.4 for 17
+                                // 5.4 for 18
+                                // 5.4 for 19
+                                // 5.4 for 20
+                                // 5.4 for 21
+                                // 5.5 for 22
+                                // 5.7 for 23
+                                // 5.7 for 24
 const double kCropDistance = 1.6;
 
 const int kConnectivity = 6;
 const int kNumberOfInflations = 10;
-const int kNumberOfDeflations = 8;
+const int kNumberOfDeflations = 5;
 
 const int dire[6][3] = {
     {1, 0, 0}, {-1, 0, 0},
@@ -657,7 +694,7 @@ void mask_test() {
                                                 ->GetTuple1(curr_code);
 
         if (mask_value < 0.5) {
-          field->GetPointData()->GetScalars()->SetTuple1(curr_code, 0.0);
+          field->GetPointData()->GetScalars()->SetTuple1(curr_code, -1.0);
         }
       }
     }
@@ -1072,6 +1109,12 @@ void dig_test() {
     double min_dist = -1.0;
     double max_dist = -1.0;
 
+    double curr_z = origin[2] + spacing[2] * z;
+    /// DEBUG ///
+    if (curr_z > 1.624) {
+      break;
+    }
+
     for (int y = 0; y < ny; y++) {
       int index = (z * ny + y) * nx;
       double curr_label = fine_label_field->GetPointData()->GetScalars()->GetTuple1(index);
@@ -1117,18 +1160,104 @@ void dig_test() {
   printf("} dig_test\n");
 }
 
+// The minimum x is zero, and we want to create a negative x mirror.
+void mirror_test() {
+  printf("mirror_test {\n");
+
+  vtkSmartPointer<vtkStructuredPointsReader> reader =
+      vtkSmartPointer<vtkStructuredPointsReader>::New();
+  reader->SetFileName(kScalarFieldFile);
+  reader->Update();
+
+  vtkSmartPointer<vtkStructuredPoints> mesh =
+      vtkSmartPointer<vtkStructuredPoints>::New();
+  mesh->DeepCopy(reader->GetOutput());
+
+  int dimensions[3];
+  mesh->GetDimensions(dimensions);
+
+  int nx = dimensions[0];
+  int ny = dimensions[1];
+  int nz = dimensions[2];
+
+  double spacing[3], origin[3];
+  mesh->GetSpacing(spacing);
+  mesh->GetOrigin(origin);
+
+  printf("dimensions: %d, %d, %d\n", dimensions[0], dimensions[1], dimensions[2]);
+  printf("spacing: %lf, %lf, %lf\n", spacing[0], spacing[1], spacing[2]);
+  printf("origin: %lf, %lf, %lf\n", origin[0], origin[1], origin[2]);
+
+  int new_dimensions[3] = {dimensions[0] * 2 - 1,
+                           dimensions[1],
+                           dimensions[2]};
+  double new_origin[3] = {origin[0] - spacing[0] * (nx - 1),
+                          origin[1],
+                          origin[2]};
+
+  vtkSmartPointer<vtkDoubleArray> scalar_array =
+      vtkSmartPointer<vtkDoubleArray>::New();
+  scalar_array->SetNumberOfComponents(1);
+  scalar_array->SetNumberOfTuples(
+      new_dimensions[0] * new_dimensions[1] * new_dimensions[2]);
+
+  for (int x = 0; x < new_dimensions[0]; x++) {
+    for (int y = 0; y < new_dimensions[1]; y++) {
+      for (int z = 0; z < new_dimensions[2]; z++) {
+        int new_index[] = {x, y, z};
+        int new_code = code(new_index, new_dimensions);
+
+        int old_index[] = {x, y, z};
+        if (x >= nx - 1) {
+          old_index[0] = x - nx + 1;
+        } else {
+          old_index[0] = nx - 1 - x;
+        }
+
+        int old_code = code(old_index, dimensions);
+        double scalar = mesh->GetPointData()->GetScalars()->GetTuple1(old_code);
+        scalar_array->SetTuple1(new_code, scalar);
+      }
+    }
+  }
+
+  vtkSmartPointer<vtkStructuredPoints> new_mesh =
+      vtkSmartPointer<vtkStructuredPoints>::New();
+  new_mesh->SetDimensions(new_dimensions);
+  new_mesh->SetOrigin(new_origin);
+  new_mesh->SetSpacing(spacing);
+  new_mesh->GetPointData()->SetScalars(scalar_array);
+
+  vtkSmartPointer<vtkStructuredPointsWriter> writer =
+      vtkSmartPointer<vtkStructuredPointsWriter>::New();
+  writer->SetInputData(new_mesh);
+  writer->SetFileName(kMirrorOutputFile);
+  writer->Write();
+
+  printf("} mirror_test\n");
+}
+
+#define BOUNDARY
+
 int main() {
   // threshold_test();
   // waterproof_test();
-  // component_test();
-  // inflate_test();
-  // deflate_test();
-  // mask_test();
+
+#ifndef BOUNDARY
+  component_test();
+  inflate_test();
+  deflate_test();
+  mask_test();
+#else
   // boundary_test();
+#endif
+
+  // Specifically for convective cell.
   // crop_test();
   // symmetricalize_test();
   // modify_test();
-  dig_test();
+  // dig_test();
+  mirror_test();
 
   return 0;
 }
